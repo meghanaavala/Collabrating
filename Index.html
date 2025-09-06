@@ -1,0 +1,149 @@
+#include <LiquidCrystal_I2C.h> // For LCD display
+
+// Pin definitions
+const int pumpPin = 3;         // Digital pin connected to the air pump
+const int valvePin = 4;        // Digital pin connected to the air release valve
+const int pressurePin = A0;    // Analog pin for the pressure sensor
+
+// LCD configuration
+LiquidCrystal_I2C lcd(0x27, 16, 2); // Set the LCD address and dimensions
+
+// Calibration and variables
+const float maxPressure_kPa = 40.0;  // Adjust based on your sensor
+const float maxVoltage = 5.0;        // 5V for Arduino Uno
+const float vOffset = 2.5;           // Voltage offset for the sensor at atmospheric pressure
+const float sensitivity_mv_kPa = 54; // Sensitivity for the MP3V5050 sensor
+
+// Store oscillometric data
+int pressureReadings[200];
+int readingIndex = 0;
+bool isMeasuring = false;
+
+// Time tracking
+unsigned long startTime;
+
+void setup() {
+  Serial.begin(9600);
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("DIY BP Monitor");
+
+  pinMode(pumpPin, OUTPUT);
+  pinMode(valvePin, OUTPUT);
+  pinMode(pressurePin, INPUT);
+
+  digitalWrite(valvePin, HIGH); // Ensure the valve is initially closed
+}
+
+void loop() {
+  if (!isMeasuring) {
+    lcd.setCursor(0, 1);
+    lcd.print("Press to Start");
+    delay(1000);
+    lcd.clear();
+
+    if (Serial.available()) {
+      char command = Serial.read();
+      if (command == 's') {
+        isMeasuring = true;
+        startMeasurement();
+      }
+    }
+  }
+
+  if (isMeasuring && millis() - startTime > 30000) {
+    // Stop after 30 seconds to prevent over-inflation
+    stopMeasurement();
+  }
+}
+
+void startMeasurement() {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Inflating...");
+
+  digitalWrite(valvePin, HIGH);  // Close valve
+  digitalWrite(pumpPin, HIGH);   // Start pump
+
+  startTime = millis();
+  readingIndex = 0;
+  
+  // Wait for the cuff to inflate
+  while (analogRead(pressurePin) < 800) { // Adjust threshold as needed
+    delay(500);
+  }
+
+  digitalWrite(pumpPin, LOW); // Stop pump
+  digitalWrite(valvePin, LOW); // Begin deflation
+  
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Deflating...");
+
+  // Record pressure readings during deflation
+  while (readingIndex < 200) {
+    pressureReadings[readingIndex] = analogRead(pressurePin);
+    readingIndex++;
+    delay(200); // 200ms delay between readings
+  }
+  
+  digitalWrite(valvePin, HIGH); // Close valve
+  processReadings();
+}
+
+void processReadings() {
+  // --- Signal processing and calculation (simplified) ---
+  // In a real device, you would analyze the oscillations in the pressure readings.
+  // This is a highly simplified approximation for demonstration.
+  
+  int maxPressureRaw = 0;
+  for (int i = 0; i < readingIndex; i++) {
+    if (pressureReadings[i] > maxPressureRaw) {
+      maxPressureRaw = pressureReadings[i];
+    }
+  }
+
+  // Convert raw ADC values to voltage and then to kPa or mmHg
+  float maxPressureVolt = (float)maxPressureRaw / 1023.0 * maxVoltage;
+  float maxPressure_kPa = (maxPressureVolt - vOffset) * (maxPressure_kPa / (sensitivity_mv_kPa / 1000.0));
+  float maxPressure_mmHg = maxPressure_kPa * 7.50062;
+  
+  // Use heuristic to estimate systolic and diastolic from Mean Arterial Pressure (MAP)
+  // This is not a precise medical method, only for demonstration.
+  int systolic = (int)(maxPressure_mmHg * 1.25);
+  int diastolic = (int)(maxPressure_mmHg * 0.75);
+
+  displayResults(systolic, diastolic, 70); // 70 is placeholder pulse
+  isMeasuring = false;
+}
+
+void displayResults(int sys, int dia, int pulse) {
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SYS:");
+  lcd.print(sys);
+  lcd.print(" mmHg");
+
+  lcd.setCursor(0, 1);
+  lcd.print("DIA:");
+  lcd.print(dia);
+  lcd.print(" Pulse:");
+  lcd.print(pulse);
+  
+  Serial.print("Systolic: ");
+  Serial.println(sys);
+  Serial.print("Diastolic: ");
+  Serial.println(dia);
+}
+
+void stopMeasurement() {
+  digitalWrite(pumpPin, LOW);
+  digitalWrite(valvePin, LOW);
+  isMeasuring = false;
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("Measurement");
+  lcd.setCursor(0, 1);
+  lcd.print("Stopped");
+}
